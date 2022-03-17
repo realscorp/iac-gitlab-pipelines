@@ -1,0 +1,71 @@
+#############
+## Terraform
+########################
+TF validate DEVQA:
+  extends:
+    - .tf-validate
+  variables:
+    environment: DEVQA
+
+TF plan DEVQA:
+  extends:
+    - .tf-plan
+  variables:
+    environment: DEVQA
+  needs:
+    - job: TF validate DEVQA
+      artifacts: true
+
+TF apply DEVQA:
+  extends:
+    - .tf-apply
+  variables:
+    environment: DEVQA
+  needs:
+    - job: TF plan DEVQA
+      artifacts: true
+
+TF show DEVQA:
+  extends:
+    - .tf-show
+  variables:
+    environment: DEVQA
+
+TF unlock DEVQA:
+  extends:
+    - .tf-unlock
+  variables:
+    environment: DEVQA
+
+#############
+## Openstack
+########################
+OS images DEVQA:
+  extends:
+    - .os-images
+  variables:
+    environment: DEVQA
+
+OS flavor DEVQA:
+  extends:
+    - .os-flavor
+  variables:
+    environment: DEVQA
+
+#############
+## Ansible
+########################
+
+ANS validate DEVQA:
+  extends:
+    - .ans-validate
+  variables:
+    environment: DEVQA
+
+ANS apply DEVQA:
+  extends:
+    - .ans-apply
+  variables:
+    environment: DEVQA
+  needs:
+    - job: ANS validate DEVQA

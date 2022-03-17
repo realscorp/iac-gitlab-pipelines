@@ -1,0 +1,7 @@
+# Пайплайн для автоматического выполнения Ansible-кода через расписания Гитлаба
+# Окружение задаётся через переменную project = (PROD/DEVQA/PLAYGROUND)
+ANS apply AUTO:
+  extends:
+    - .ans-apply-auto
+  variables:
+    environment: $project

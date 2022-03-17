@@ -1,0 +1,376 @@
+###############################################################
+# Скрытые (точка перед именем) джобы используются, как
+# библиотеки для вызова их через extends далее в джобах в файлах
+# по окружениям. Нужны, чтобы не повторять один и тот же код
+# по многу раз. Сами по себе скрытые джобы не запускаются
+# и в пайплайне не видны.
+###############################################################
+
+
+
+
+# ██ ███    ██ ██ ████████ ██  █████  ██      ██ ███████ ███████ 
+# ██ ████   ██ ██    ██    ██ ██   ██ ██      ██    ███  ██      
+# ██ ██ ██  ██ ██    ██    ██ ███████ ██      ██   ███   █████   
+# ██ ██  ██ ██ ██    ██    ██ ██   ██ ██      ██  ███    ██      
+# ██ ██   ████ ██    ██    ██ ██   ██ ███████ ██ ███████ ███████ 
+
+###############################################################
+# Список стадий пайплайна, общий для Terraform, Ansible и Packer
+###############################################################
+stages:
+  - tools
+  - validate
+  - build
+  - deploy
+
+###############################################################
+# Инициализация переменных и ключей для доступа к проектам или инстансам
+###############################################################
+.init:
+  variables:
+    # Настройки для загрузки вспомогательных файлов в раннер
+    HELPERS_REPO: git@gitlab.example.com:infrastructureascode/lib/pipeline-helpers.git
+    HELPERS_VERSION: v1.0.0
+    # Общие настройки доступа ко всем облачным проектам
+    OS_IDENTITY_API_VERSION: 3
+    OS_AUTH_URL: "https://infra.mail.ru:35357/v3/"
+    OS_REGION_NAME: "RegionOne"
+    OS_USER_DOMAIN_NAME: "users"
+    # Определяем кредсы доступа к облаку и ключи, заданные для конкретного окружения, но, так как в бесплатной версии Gitlab нельзя задать CI/CD переменные в группе
+    # для окружения (как можно сделать внутри проекта), используем префиксы переменных. Сначала синтезируем имя переменной, из которой мы хотим забрать значения
+    OS_USER_VARNAME: ${environment}_OS_USER # Сначала синтезируем имя переменной, из которой мы хотим забрать значения
+    OS_PASS_VARNAME: ${environment}_OS_PASS
+    OS_TENANT_VARNAME: ${environment}_OS_TENANT
+    SSH_KEY_VARNAME: ${environment}_SSH_KEY
+    WINRM_KEY_VARNAME: ${environment}_WINRM_KEY
+    WINRM_DER_VARNAME: ${environment}_WINRM_DER
+    # затем забираем их (обрати внимание на $ перед именем переменной)
+    OS_PROJECT_ID: ${$OS_TENANT_VARNAME}
+    OS_USERNAME: ${$OS_USER_VARNAME}
+    OS_PASSWORD: ${$OS_PASS_VARNAME}
+    SSH_KEY: ${$SSH_KEY_VARNAME}
+    WINRM_KEY: ${$WINRM_KEY_VARNAME}
+    WINRM_DER: ${$WINRM_DER_VARNAME}
+  before_script:
+    - echo -e "\e[47m\e[0Ksection_start:`date +%s`:env_vars[collapsed=true]\r\e[0KList env vars" # Красивые сворачивающиеся разделы в логе джоба
+    - env | sort -f # выводим все немаскированные переменные окружения с целью упрощения отладки. список сортируем
+    - echo -e "\e[0Ksection_end:`date +%s`:env_vars\r\e[0K" # Сворачиваем секцию лога
+    - echo -e "\e[42m\e[0Ksection_start:`date +%s`:init_before_script[collapsed=true]\r\e[0KInit - Before script" # Красивые сворачивающиеся разделы в логе джоба
+    # Настраиваем ssh
+    - "command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )" # проверяем, что ssh-agent есть в образе
+    - mkdir -p ~/.ssh # готовим каталог под хранение ключей
+    - echo "${SSH_KEY}" | base64 -d > $HOME/.ssh/id_rsa # Разворачиваем из переменных приватный ssh-ключ проекта, который был закодирован BASE64, чтобы работала маскировка
+    - chmod -R 700 ~/.ssh
+    - eval $(ssh-agent -s) # запускаем ssh-agent, чтобы он был в памяти
+    - ssh-add $HOME/.ssh/id_rsa # добавляем ключ в ssh
+    - ssh-keygen -y -f $HOME/.ssh/id_rsa > $HOME/.ssh/id_rsa.pub # генерируем из закрытой открытую часть, которая пригодится для создания инстасов с ключевой парой
+    - cat $HOME/.ssh/id_rsa.pub # для отладки выводим в консоль открытую часть ключа
+    - ssh-keyscan -t rsa,dsa gitlab.example.com > ~/.ssh/known_hosts # Добавляем отпечаток сервера Гитлаб в известные хосты, иначе будет ошибка
+    # Настраиваем ключи winrm
+    - mkdir -p ~/.winrm
+    - echo "${WINRM_KEY}" | base64 -d > $HOME/.winrm/winrm.key # Ключ был закодирован в base64, так как иначе маскировка переменной в Гитлабе не сработает
+    - echo "${WINRM_DER}" | base64 -d > $HOME/.winrm/winrm.der # А der просто бинарный формат сам по себе, поэтому он тоже переведён в base64
+    - echo -e "\e[0Ksection_end:`date +%s`:init_before_script\r\e[0K" # Сворачиваем секцию лога
+    # Загружаем файлы из этого репозитория, чтобы использовать их в некоторых джобах
+    - git clone -b $HELPERS_VERSION --single-branch $HELPERS_REPO
+
+
+#  █████  ███    ██ ███████ ██ ██████  ██      ███████ 
+# ██   ██ ████   ██ ██      ██ ██   ██ ██      ██      
+# ███████ ██ ██  ██ ███████ ██ ██████  ██      █████   
+# ██   ██ ██  ██ ██      ██ ██ ██   ██ ██      ██      
+# ██   ██ ██   ████ ███████ ██ ██████  ███████ ███████ 
+
+.ans-init:
+  extends:
+    - .init
+  image: realscorp/ansible:0.3
+  cache: # На стадии Validate сохраняем в кэш установленные коллекции и роли, которые далее будут передаваться в другие джобы
+    key: ${CI_PROJECT_NAME}-${environment}-ansible # Добавляем к имени кэша название окружения, чтобы кэш был уникальным
+    paths:
+      - ansible/lib/roles # Кэшируем установленные на шаге Validate роли и коллекции, чтобы на шаге Apply сэкономить время на их установку
+      - ansible/lib/collections/
+  variables:
+    ANS_ROOT: ${CI_PROJECT_DIR}/ansible # Указываем, где в данном репозитории у нас код Ansible
+    ANSIBLE_ROLES_PATH: ${ANS_ROOT}/lib/roles # Указываем каталоги, куда нужно будет устанавливать роли и коллекции
+    ANSIBLE_COLLECTIONS_PATH: ${ANS_ROOT}/lib/collections
+    # Настраиваем переменные для правильной работы одного кода Ansible в разных окружениях
+    VARFILE: ${ANS_ROOT}/environment/${environment}.vars.yml # Переменные из этого файла автоматически будут подгружены при выполнении плейбука
+  before_script:
+    - !reference [.init, before_script] # Добавляем before_script из init через reference, потому что по другому массивы в Гитлабе не мерджатся
+    - openssl x509 -inform der -outform pem -in $HOME/.winrm/winrm.der -out $HOME/.winrm/winrm.pem # конвертируем из der в pem, потому что только с pem можно подключиться
+    - cd $ANS_ROOT
+    # Настраиваем расшифровку Vault-файла, если пароль был задан в переменной
+    - if [ ${ANS_VAULT_PASS} != "" ]; then echo ${ANS_VAULT_PASS} > ~/vaultpass.txt; fi
+    - if [ ${ANS_VAULT_PASS} != "" ]; then export ANSIBLE_VAULT_PASSWORD_FILE='~/vaultpass.txt'; fi
+    # Настраиваем выполнение плейбука с использованием тегов и ограничениями по хостам
+    - if [ ${h} != "" ]; then LIMIT="-l ${h}"; else LIMIT=""; fi # если установлена переменная h, добавляем её как опцию -l
+    - if [ ${t} != "" ]; then TAGS="-t ${t}"; else TAGS=""; fi # если установлена переменная t, добавляем её как опцию -t
+
+.ans-validate:
+  stage: validate
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .ans-init
+  script:
+    - echo -e "\e[44m\e[0Ksection_start:`date +%s`:ansible_validate\r\e[0KAnsible - Validate" # Красивые сворачивающиеся разделы в логе джоба
+    - ansible-galaxy install -r roles/requirements.yml # устанавливаем все зависимости и роли
+    - ansible-playbook --syntax-check playbook.yml # проверяем синтаксис плейбука
+    - ansible-lint -v -c .ansible-lint # запускаем линтер, автоматически применяются правила из .ansible-lint
+    - ansible-inventory -i inventory/ --graph # показываем в консоли список всех групп и хостов в них
+    - cat $VARFILE # Показываем список переменных из того файла, который будет применён при запуске пайплайна
+    - echo -e "\e[0Ksection_end:`date +%s`:ansible_validate\r\e[0K"
+  rules:
+    - if: '$ENABLE_ANSIBLE != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Ansible, прячем джобу
+      when: never
+    - if: '$CI_PIPELINE_SOURCE != "web"' # Если пайп запущен не вручную через веб-фейс
+      changes: # и в коммите были изменены файлы в каталоге ansible, запускаем джобу автоматически
+        - ansible/**/*
+      when: always
+    - exists: # В противном случае - запускаем вручную
+        - ansible/**/*
+      when: manual
+
+.ans-apply:
+  stage: deploy
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .ans-init
+  script:
+    - echo -e "\e[43m\e[0Ksection_start:`date +%s`:ansible_apply\r\e[0KAnsible - Apply" # Красивые сворачивающиеся разделы в логе джоба
+    - ansible-galaxy install -r roles/requirements.yml # устанавливаем все зависимости и роли
+    - ansible-playbook -i inventory/ playbook.yml --extra-vars="@${VARFILE}" $LIMIT $TAGS # запускаем плейбук, применив переменные, соответствующие окружению и опции тегов/хостов
+    - echo -e "\e[0Ksection_end:`date +%s`:ansible_apply\r\e[0K"
+  rules:
+    - if: '$ENABLE_ANSIBLE != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Ansible, прячем джобу
+      when: never
+    # Если ветка не main, но мы работаем в окружении-песочнице, то разрешим выполнение джобы
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $environment == "PLAYGROUND"'
+      exists:
+        - ansible/**/*
+      when: manual
+    # А если ветка - main, разрешим ручное выполнение джобы для всех окружений. В противном случае джоба не разрешена.
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      exists:
+        - ansible/**/*
+      when: manual
+
+.ans-apply-auto:
+  stage: deploy
+  allow_failure: false
+  extends:
+    - .ans-init
+  script:
+    - echo -e "\e[43m\e[0Ksection_start:`date +%s`:ansible_apply\r\e[0KAnsible - Apply" # Красивые сворачивающиеся разделы в логе джоба
+    - ansible-galaxy install -r roles/requirements.yml # устанавливаем все зависимости и роли
+    - ansible-playbook -i inventory/ playbook.yml --extra-vars="@${VARFILE}" $LIMIT $TAGS # запускаем плейбук, применив переменные, соответствующие окружению и опции тегов/хостов
+    - echo -e "\e[0Ksection_end:`date +%s`:ansible_apply\r\e[0K"
+  rules:
+    # Автоматическое выполнение для ветки main при запуске из schedules
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule"'
+      exists:
+        - ansible/**/*
+      when: always
+    # Ручное выполнение для ветки main при запуске пайплайна из веб-интерфейса
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "web"'
+      exists:
+        - ansible/**/*
+      when: manual
+
+
+
+
+# ████████ ███████ ██████  ██████   █████  ███████  ██████  ██████  ███    ███ 
+#    ██    ██      ██   ██ ██   ██ ██   ██ ██      ██    ██ ██   ██ ████  ████ 
+#    ██    █████   ██████  ██████  ███████ █████   ██    ██ ██████  ██ ████ ██ 
+#    ██    ██      ██   ██ ██   ██ ██   ██ ██      ██    ██ ██   ██ ██  ██  ██ 
+#    ██    ███████ ██   ██ ██   ██ ██   ██ ██       ██████  ██   ██ ██      ██ 
+                                                                             
+# Базовые, общие для всех джобов Терраформа настройки
+.tf-init:
+  extends:
+    - .init
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+  cache: # На стадии Validate сохраняем в кэш установленные провайдеры и модули, которые далее будут передаваться в другие джобы
+    key: ${CI_PROJECT_NAME}-${environment}-terraform # Добавляем к имени кэша название окружения, чтобы кэш был уникальным
+    paths:
+      - ${TF_ROOT}/.terraform # Здесь у нас провайдеры и модули, загруженные на стадии Validate
+  variables:
+    # Настраиваем переменные для правильной работы одного кода Терраформа в разных окружениях
+    PLAN: plan-${environment} # Кэшируем план в отдельные файлы по именам окружений
+    TF_ROOT: ${CI_PROJECT_DIR}/terraform # Указываем, где в репозитории у нас код Терраформа
+    VARFILE: ${TF_ROOT}/environment/${environment}.tfvars
+    TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_ID}-${environment} # Стейт отдельный для каждого окр-я
+    KRB5_CONFIG: ${CI_PROJECT_DIR}/pipeline-helpers/terraform/krb5_config # Необходимо для того, чтобы DNS провайдер авторизовался по GSS
+    # Настройки Gitlab managed Terraform state
+    TF_HTTP_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_ID}-${environment} # Стейт отдельный для каждого окр-я
+    TF_HTTP_LOCK_ADDRESS: ${TF_HTTP_ADDRESS}/lock # Адрес для блокировки стейта при выполнии plan или apply
+    TF_HTTP_UNLOCK_ADDRESS: ${TF_HTTP_ADDRESS}/lock
+    TF_HTTP_LOCK_METHOD: "POST" # метод блокировки, валидный для Gitlab-managed state
+    # Настраиваем бэкенд - хранение стейта в gitlab
+  before_script:
+    - !reference [.init, before_script] # Добавляем before_script из init через reference, потому что по другому массивы в Гитлабе не мерджатся
+    - cp pipeline-helpers/terraform/.terraformrc $HOME/.terraformrc # Настраиваем Терраформ на работу с локальным зеркалом провайдеров
+    - mv pipeline-helpers/terraform/backend_config.tf ${TF_ROOT}/backend_config.tf # Переключаем backend на http, чтобы хранить стейт в Гитлабе
+    - cd ${TF_ROOT}
+
+
+# Джоба для валидации кода Терраформ на наличие явных семантических и синтаксических ошибок
+.tf-validate:
+  stage: validate
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .tf-init
+  script:
+    - echo -e "\e[44m\e[0Ksection_start:`date +%s`:terraform_validate[collapsed=true]\r\e[0KTerraform - Validate" # Красивые сворачивающиеся разделы в логе джоба
+    - gitlab-terraform init -reconfigure # На этом этапе Терраформ скачивает все модули и провайдеры, которые потом сохранятся в кэш
+    - gitlab-terraform validate # Валидируем. Эта команда не принимает указание на файлы переменных, поэтому без них
+    - echo -e "\e[0Ksection_end:`date +%s`:terraform_validate\r\e[0K"
+  rules:
+    - if: '$ENABLE_TERRAFORM != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Terraform, прячем джобу
+      when: never
+    - if: '$CI_PIPELINE_SOURCE != "web"' # Если пайп запущен не вручную через веб-фейс
+      changes: # и в коммите были изменены файлы в каталоге terraform, запускаем джобу автоматически
+        - terraform/**/*
+      when: always
+    - exists: # В противном случае - запускаем вручную
+        - terraform/**/*
+      when: manual
+
+# Создание Терраформ-плана
+.tf-plan:
+  stage: build
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .tf-init
+  script:
+    - echo -e "\e[43m\e[0Ksection_start:`date +%s`:terraform_plan\r\e[0KTerraform - Plan"
+    - gitlab-terraform plan -var-file=$VARFILE # План запускаем, указав Терраформу файл с переменными для текущего окружения
+    - gitlab-terraform plan-json -var-file=$VARFILE # Тот же план, но с выводом в json для отчёта в Gitlab
+    - echo -e "\e[0Ksection_end:`date +%s`:terraform_plan\r\e[0K"
+  artifacts: # С помощью механизма артефактов мы передаём в следующую джобу файлы с планом
+    name: ${PLAN}
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+  rules:
+    - if: '$ENABLE_TERRAFORM != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Terraform, прячем джобу
+      when: never
+    - if: '$CI_PIPELINE_SOURCE != "web"' # Если пайп запущен не вручную через веб-фейс
+      changes: # и в коммите были изменены файлы в каталоге terraform, запускаем джобу автоматически
+        - terraform/*.tf
+      when: always
+    - exists: # В противном случае - запускаем вручную
+        - terraform/*
+      when: manual
+
+# Применение созданного плана, только вручную и только для main-ветки
+.tf-apply:
+  stage: deploy
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .tf-init
+  script:
+    - echo -e "\e[43m\e[0Ksection_start:`date +%s`:terraform_apply\r\e[0KTerraform - Apply"
+    - gitlab-terraform apply # Применение запускаем согласно созданному ранее плану. Файл переменных не указываем, так
+    - echo -e "\e[0Ksection_end:`date +%s`:terraform_apply\r\e[0K"
+  rules:
+    - if: '$ENABLE_TERRAFORM != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Terraform, прячем джобу
+      when: never
+    # Если ветка не main, но мы работаем в окружении-песочнице, то разрешим выполнение джобы
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $environment == "PLAYGROUND"'
+      exists:
+        - terraform/**/*
+      when: manual
+    # А если ветка - main, разрешим ручное выполнение джобы для всех окружений. В противном случае джоба не разрешена.
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      exists:
+        - terraform/**/*
+      when: manual
+
+# Показать значения всех output из стейта
+.tf-show:
+  stage: tools
+  allow_failure: true # без этого пайплайн будет постоянно висеть в статусе blocked или running
+  extends:
+    - .tf-init
+  script:
+    - echo -e "\e[44m\e[0Ksection_start:`date +%s`:terraform_show\r\e[0KTerraform - Show"
+    - gitlab-terraform init
+    - gitlab-terraform show
+    - echo -e "\e[0Ksection_end:`date +%s`:terraform_show\r\e[0K"
+  rules:
+    - if: '$ENABLE_TERRAFORM == "true"'
+      when: manual
+
+# Уничтожить описанную в коде инфраструктуру (ТОЛЬКО ДЛЯ PLAYGROUND!)
+.tf-destroy:
+  stage: tools
+  allow_failure: true
+  extends:
+    - .tf-init
+  script:
+    - echo -e "\e[101m\e[0Ksection_start:`date +%s`:terraform_destroy\r\e[0KTerraform - Destroy"
+    - gitlab-terraform destroy -var-file=$VARFILE # Применение запускаем, указав Терраформу файл с переменными для текущего окружения
+    - echo -e "\e[0Ksection_end:`date +%s`:terraform_destroy\r\e[0K"
+  rules:
+    - if: '$ENABLE_TERRAFORM == "true"'
+      when: manual
+
+# Снять блокировку со стейта в случае, если предыдущий пайплайн прервался до самостоятельного удаления блокировки
+.tf-unlock:
+  stage: tools
+  allow_failure: true
+  extends:
+    - .tf-init
+  script:
+    - 'curl -X DELETE --header "PRIVATE-TOKEN: ${TF_HTTP_PASSWORD}" ${TF_HTTP_LOCK_ADDRESS}'
+  when: manual
+  rules:
+  - if: '$ENABLE_TERRAFORM != "true"' # Если в настройках gitlab-ci.yml проекта, откуда вызывается пайп, отключены утилиты Terraform, прячем джобу
+    when: never
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    exists:
+      - terraform/**/*
+    when: manual
+
+
+
+
+#  ██████  ██████  ███████ ███    ██ ███████ ████████  █████   ██████ ██   ██ 
+# ██    ██ ██   ██ ██      ████   ██ ██         ██    ██   ██ ██      ██  ██  
+# ██    ██ ██████  █████   ██ ██  ██ ███████    ██    ███████ ██      █████   
+# ██    ██ ██      ██      ██  ██ ██      ██    ██    ██   ██ ██      ██  ██  
+#  ██████  ██      ███████ ██   ████ ███████    ██    ██   ██  ██████ ██   ██ 
+                                                                            
+.os-init:
+  extends:
+  - .init
+  image: openstacktools/openstack-client:latest
+  allow_failure: true
+
+.os-images:
+  stage: tools
+  extends:
+    - .os-init
+  script:
+    - echo -e "\e[44m\e[0Ksection_start:`date +%s`:openstack_images\r\e[0KOpenStack - show avaliable images"
+    - openstack image list
+    - echo -e "\e[0Ksection_end:`date +%s`:openstack_images\r\e[0K"
+  rules:
+    - if: '$ENABLE_OPENSTACK_TOOLS == "true"'
+      when: manual
+
+.os-flavor:
+  stage: tools
+  extends:
+    - .os-init
+  script:
+    - echo -e "\e[44m\e[0Ksection_start:`date +%s`:openstack_images\r\e[0KOpenStack - show avaliable images"
+    - openstack flavor list
+    - echo -e "\e[0Ksection_end:`date +%s`:openstack_images\r\e[0K"
+  rules:
+    - if: '$ENABLE_OPENSTACK_TOOLS == "true"'
+      when: manual

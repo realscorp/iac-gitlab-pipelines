@@ -1,0 +1,72 @@
+#############
+## Terraform
+########################
+TF validate PROD:
+  extends:
+    - .tf-validate
+  variables:
+    environment: PROD
+
+TF plan PROD:
+  extends:
+    - .tf-plan
+  variables:
+    environment: PROD
+  needs:
+    - job: TF validate PROD
+      artifacts: true
+
+TF apply PROD:
+  extends:
+    - .tf-apply
+  variables:
+    environment: PROD
+  needs:
+    - job: TF plan PROD
+      artifacts: true
+
+TF show PROD:
+  extends:
+    - .tf-show
+  variables:
+    environment: PROD
+
+TF unlock PROD:
+  extends:
+    - .tf-unlock
+  variables:
+    environment: PROD
+
+
+#############
+## Openstack
+########################
+OS images PROD:
+  extends:
+    - .os-images
+  variables:
+    environment: PROD
+
+OS flavor PROD:
+  extends:
+    - .os-flavor
+  variables:
+    environment: PROD
+
+#############
+## Ansible
+########################
+
+ANS validate PROD:
+  extends:
+    - .ans-validate
+  variables:
+    environment: PROD
+
+ANS apply PROD:
+  extends:
+    - .ans-apply
+  variables:
+    environment: PROD
+  needs:
+    - job: ANS validate PROD

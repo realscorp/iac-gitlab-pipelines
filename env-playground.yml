@@ -1,0 +1,77 @@
+#############
+## Terraform
+########################
+TF validate PLAYGROUND:
+  extends:
+    - .tf-validate
+  variables:
+    environment: PLAYGROUND
+
+TF plan PLAYGROUND:
+  extends:
+    - .tf-plan
+  variables:
+    environment: PLAYGROUND
+  needs:
+    - job: TF validate PLAYGROUND
+      artifacts: true
+
+TF apply PLAYGROUND:
+  extends:
+    - .tf-apply
+  variables:
+    environment: PLAYGROUND
+  needs:
+    - job: TF plan PLAYGROUND
+      artifacts: true
+
+TF show PLAYGROUND:
+  extends:
+    - .tf-show
+  variables:
+    environment: PLAYGROUND
+
+TF unlock PLAYGROUND:
+  extends:
+    - .tf-unlock
+  variables:
+    environment: PLAYGROUND
+
+TF destroy PLAYGROUND:
+  extends:
+    - .tf-destroy
+  variables:
+    environment: PLAYGROUND
+
+#############
+## Openstack
+########################
+OS images PLAYGROUND:
+  extends:
+    - .os-images
+  variables:
+    environment: PLAYGROUND
+
+OS flavor PLAYGROUND:
+  extends:
+    - .os-flavor
+  variables:
+    environment: PLAYGROUND
+
+#############
+## Ansible
+########################
+
+ANS validate PLAYGROUND:
+  extends:
+    - .ans-validate
+  variables:
+    environment: PLAYGROUND
+
+ANS apply PLAYGROUND:
+  extends:
+    - .ans-apply
+  variables:
+    environment: PLAYGROUND
+  needs:
+    - job: ANS validate PLAYGROUND
